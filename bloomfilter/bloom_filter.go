@@ -15,7 +15,7 @@ type BloomFilter struct {
 	size      uint64         // 位集合大小
 	hashFuncs []hash.Hash64  // 哈希函数集合
 	mutex     sync.RWMutex   // 读写锁
-	hashMutex sync.Mutex     // 添加专门的哈希函数互斥锁
+	// hashMutex sync.Mutex     // 添加专门的哈希函数互斥锁
 }
 
 // NewWithFalsePositiveRate 根据预期元素数量和误判率创建布隆过滤器
@@ -55,8 +55,8 @@ func (bf *BloomFilter) Add(item []byte) {
 	bf.mutex.Lock()
 	defer bf.mutex.Unlock()
 
-	bf.hashMutex.Lock()
-	defer bf.hashMutex.Unlock()
+	// bf.hashMutex.Lock()
+	// defer bf.hashMutex.Unlock()
 
 	for _, h := range bf.hashFuncs {
 		h.Reset()
@@ -71,8 +71,8 @@ func (bf *BloomFilter) Contains(item []byte) bool {
 	bf.mutex.RLock()
 	defer bf.mutex.RUnlock()
 
-	bf.hashMutex.Lock()
-	defer bf.hashMutex.Unlock()
+	// bf.hashMutex.Lock()
+	// defer bf.hashMutex.Unlock()
 
 	for _, h := range bf.hashFuncs {
 		h.Reset()
