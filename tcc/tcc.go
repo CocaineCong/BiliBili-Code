@@ -38,7 +38,6 @@ func (c *Coordinator) Execute(ctx context.Context) error {
 		c.cancelAll(ctx)
 		return tryErr
 	}
-
 	// 阶段2: Confirm
 	var confirmErr error
 	for _, p := range c.participants {
@@ -47,7 +46,6 @@ func (c *Coordinator) Execute(ctx context.Context) error {
 			break
 		}
 	}
-
 	if confirmErr != nil {
 		// Confirm阶段失败，执行Cancel
 		c.cancelAll(ctx)
