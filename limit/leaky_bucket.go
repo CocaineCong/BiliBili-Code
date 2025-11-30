@@ -6,109 +6,90 @@ import (
 )
 
 // LeakyBucket 漏桶算法实现
+// 1. 恒定速率流出请求
+// 2. 如果桶未满但有水，请求会阻塞等待直到轮到自己
+// 3. 如果桶满了，请求被拒绝
 type LeakyBucket struct {
-	capacity  int64         // 桶容量
-	tokens    int64         // 当前桶中的令牌数
-	leakRate  time.Duration // 漏桶速率（多久漏一个令牌）
-	lastLeak  time.Time     // 上次漏桶时间
-	mutex     sync.Mutex    // 互斥锁
-	stopCh    chan struct{} // 停止信号
-	isRunning bool          // 是否正在运行
+	capacity int64         // 桶容量（最大允许排队请求数）
+	rate     time.Duration // 漏水速率（每个请求的处理间隔）
+	lastTime time.Time     // 上一次请求的理论结束时间（水位线）
+	mutex    sync.Mutex    // 互斥锁
 }
 
 // NewLeakyBucket 创建新的漏桶
 // capacity: 桶容量
-// leakRate: 漏桶速率，例如 100*time.Millisecond 表示每100毫秒漏一个令牌
+// leakRate: 漏桶速率，例如 100 表示每100毫秒漏一个令牌
 func NewLeakyBucket(capacity int64, leakRate time.Duration) *LeakyBucket {
-	bucket := &LeakyBucket{
-		capacity:  capacity,
-		tokens:    0,
-		leakRate:  leakRate,
-		lastLeak:  time.Now(),
-		stopCh:    make(chan struct{}),
-		isRunning: false,
-	}
-
-	// 启动漏桶协程
-	bucket.start()
-	return bucket
-}
-
-// start 启动漏桶的定时漏水协程
-func (lb *LeakyBucket) start() {
-	lb.mutex.Lock()
-	if lb.isRunning {
-		lb.mutex.Unlock()
-		return
-	}
-	lb.isRunning = true
-	lb.mutex.Unlock()
-
-	go func() {
-		ticker := time.NewTicker(lb.leakRate)
-		defer ticker.Stop()
-
-		for {
-			select {
-			case <-ticker.C:
-				lb.leak()
-			case <-lb.stopCh:
-				return
-			}
-		}
-	}()
-}
-
-// leak 执行漏桶操作
-func (lb *LeakyBucket) leak() {
-	lb.mutex.Lock()
-	defer lb.mutex.Unlock()
-
-	if lb.tokens > 0 {
-		lb.tokens--
-		lb.lastLeak = time.Now()
+	return &LeakyBucket{
+		capacity: capacity,
+		rate:     leakRate,
+		lastTime: time.Now(),
 	}
 }
 
 // Allow 尝试向桶中添加一个请求
-// 如果桶未满，返回 true；如果桶满了，返回 false
+// 如果桶未满，该方法会阻塞直到请求被“漏”出（流量整形），然后返回 true
+// 如果桶满了，立即返回 false
 func (lb *LeakyBucket) Allow() bool {
-	lb.mutex.Lock()
-	defer lb.mutex.Unlock()
-
-	if lb.tokens < lb.capacity {
-		lb.tokens++
-		return true
-	}
-	return false
+	return lb.AllowN(1)
 }
 
 // AllowN 尝试向桶中添加 n 个请求
 func (lb *LeakyBucket) AllowN(n int64) bool {
 	lb.mutex.Lock()
-	defer lb.mutex.Unlock()
-
-	if lb.tokens+n <= lb.capacity {
-		lb.tokens += n
-		return true
+	now := time.Now()
+	// 如果 lastTime 在过去，说明桶空了，重置水位为当前时间
+	if now.After(lb.lastTime) {
+		lb.lastTime = now
 	}
-	return false
+	// 计算添加这些请求后的新水位（理论结束时间）
+	increment := lb.rate * time.Duration(n)
+	newLastTime := lb.lastTime.Add(increment)
+	// 检查是否超过容量
+	// 容量限制体现为：允许的最大排队等待时间
+	maxWait := lb.rate * time.Duration(lb.capacity)
+	if newLastTime.Sub(now) > maxWait {
+		lb.mutex.Unlock()
+		return false
+	}
+	// 计算当前请求需要等待的时间（排在前面的请求处理完的时间）
+	waitTime := lb.lastTime.Sub(now)
+	// 更新水位
+	lb.lastTime = newLastTime
+	lb.mutex.Unlock()
+	// 如果需要等待（流量整形），则阻塞
+	if waitTime > 0 {
+		time.Sleep(waitTime)
+	}
+
+	return true
 }
 
 // GetStatus 获取当前桶的状态
+// current: 当前桶中的排队请求数（估算）
+// capacity: 桶的总容量
 func (lb *LeakyBucket) GetStatus() (current int64, capacity int64) {
 	lb.mutex.Lock()
 	defer lb.mutex.Unlock()
-	return lb.tokens, lb.capacity
+
+	now := time.Now()
+	if now.After(lb.lastTime) {
+		return 0, lb.capacity
+	}
+
+	// 计算剩余排队时间
+	remainingTime := lb.lastTime.Sub(now)
+	// 转换为请求数，向上取整
+	// 如果还有剩余时间，说明桶里有水
+	if remainingTime > 0 {
+		current = int64(remainingTime / lb.rate)
+		if remainingTime%lb.rate != 0 {
+			current++
+		}
+	}
+
+	return current, lb.capacity
 }
 
 // Stop 停止漏桶
-func (lb *LeakyBucket) Stop() {
-	lb.mutex.Lock()
-	defer lb.mutex.Unlock()
-
-	if lb.isRunning {
-		close(lb.stopCh)
-		lb.isRunning = false
-	}
-}
+func (lb *LeakyBucket) Stop() {}

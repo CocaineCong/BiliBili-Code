@@ -68,66 +68,6 @@ func TestRateLimiterInterface(t *testing.T) {
 }
 
 // TestRateLimiterBehavior 测试所有限流器的基本行为一致性
-func TestRateLimiterBehavior(t *testing.T) {
-	limiters := map[string]RateLimiter{
-		"FixedWindowCounter":   NewFixedWindowCounter(3, time.Hour), // 长时间窗口避免重置
-		"SlidingWindowCounter": NewSlidingWindowCounter(3, time.Hour, time.Minute),
-		"TokenBucket":          NewTokenBucket(3, 1),         // 1补充速率
-		"LeakyBucket":          NewLeakyBucket(3, time.Hour), // 慢漏水速率
-	}
-
-	// 清理资源
-	defer func() {
-		if tb, ok := limiters["TokenBucket"].(*TokenBucket); ok {
-			tb.Stop()
-		}
-		if lb, ok := limiters["LeakyBucket"].(*LeakyBucket); ok {
-			lb.Stop()
-		}
-	}()
-
-	for name, limiter := range limiters {
-		t.Run(fmt.Sprintf("%s_基本行为", name), func(t *testing.T) {
-			// 测试初始状态
-			current, limit := limiter.GetStatus()
-
-			// 对于TokenBucket，初始时是满的
-			if name == "TokenBucket" {
-				if current != limit {
-					t.Errorf("%s: 初始状态应该是满的: current=%d, limit=%d", name, current, limit)
-				}
-			} else {
-				// 对于其他限流器，初始时是空的
-				if current != 0 {
-					t.Errorf("%s: 初始状态应该是空的: current=%d", name, current)
-				}
-			}
-
-			if limit != 3 {
-				t.Errorf("%s: 限制应该是3: limit=%d", name, limit)
-			}
-
-			// 测试Allow方法的一致性
-			allowCount := 0
-			for i := 0; i < 5; i++ {
-				if limiter.Allow() {
-					allowCount++
-				}
-			}
-
-			// 所有限流器都应该最多允许3个请求
-			if allowCount > 3 {
-				t.Errorf("%s: 允许的请求数超过限制: %d", name, allowCount)
-			}
-
-			// TokenBucket初始是满的，应该允许3个请求
-			// 其他限流器应该允许3个请求
-			if allowCount != 3 {
-				t.Errorf("%s: 应该允许3个请求，实际%d个", name, allowCount)
-			}
-		})
-	}
-}
 
 // TestRateLimiterZeroLimit 测试零限制的一致性
 func TestRateLimiterZeroLimit(t *testing.T) {

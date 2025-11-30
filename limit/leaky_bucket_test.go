@@ -6,246 +6,140 @@ import (
 	"time"
 )
 
-// TestLeakyBucket_Basic 测试漏桶基本功能
+// TestLeakyBucket_Basic 测试漏桶基本功能（Traffic Shaping 模式）
 func TestLeakyBucket_Basic(t *testing.T) {
-	bucket := NewLeakyBucket(3, 100*time.Millisecond) // 容量3，每100ms漏一个
+	// 容量3，每100ms漏一个
+	bucket := NewLeakyBucket(3, 100*time.Millisecond)
 	defer bucket.Stop()
-	
-	// 应该可以添加3个请求
-	for i := 0; i < 3; i++ {
-		if !bucket.Allow() {
-			t.Errorf("第%d个请求应该可以添加", i+1)
+	// 串行调用 Allow()
+	// 第1个：立即返回
+	start := time.Now()
+	if !bucket.Allow() {
+		t.Error("第1个请求应该成功")
+	}
+	// 第2个：应该阻塞约 100ms
+	if !bucket.Allow() {
+		t.Error("第2个请求应该成功")
+	}
+	// 第3个：应该再阻塞约 100ms
+	if !bucket.Allow() {
+		t.Error("第3个请求应该成功")
+	}
+	elapsed := time.Since(start)
+	// 总耗时应该至少 200ms (第2个等待100ms，第3个等待100ms)
+	if elapsed < 180*time.Millisecond {
+		t.Errorf("流量整形未生效，3个请求总耗时过短: %v", elapsed)
+	}
+}
+
+// TestLeakyBucket_Overflow 测试桶满拒绝
+func TestLeakyBucket_Overflow(t *testing.T) {
+	// 容量2，每100ms漏一个
+	bucket := NewLeakyBucket(2, 100*time.Millisecond)
+	defer bucket.Stop()
+
+	// 模拟并发突发流量
+	var wg sync.WaitGroup
+	results := make(chan bool, 5)
+
+	// 同时发起 5 个请求
+	for i := 0; i < 5; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			results <- bucket.Allow()
+		}()
+	}
+
+	wg.Wait()
+	close(results)
+
+	successCount := 0
+	for res := range results {
+		if res {
+			successCount++
 		}
 	}
-	
-	// 第4个请求应该失败（桶满了）
-	if bucket.Allow() {
-		t.Error("第4个请求应该失败")
-	}
-	
-	// 检查状态
-	current, capacity := bucket.GetStatus()
-	if current != 3 || capacity != 3 {
-		t.Errorf("状态错误: current=%d, capacity=%d", current, capacity)
+
+	// 注意：由于并发调度的不确定性，可能有些请求稍微晚一点进入，导致 now 增加，从而可能通过更多。
+	// 但在极短时间内，应该接近 2 个。
+	if successCount < 2 || successCount > 3 {
+		t.Errorf("预期通过2-3个请求，实际通过 %d 个", successCount)
 	}
 }
 
-// TestLeakyBucket_Leak 测试漏桶功能
-func TestLeakyBucket_Leak(t *testing.T) {
-	bucket := NewLeakyBucket(2, 50*time.Millisecond) // 容量2，每50ms漏一个
-	defer bucket.Stop()
-	
-	// 填满桶
-	bucket.Allow()
-	bucket.Allow()
-	
-	// 应该满了
-	if bucket.Allow() {
-		t.Error("桶应该满了")
-	}
-	
-	// 等待漏水
-	time.Sleep(80 * time.Millisecond)
-	
-	// 现在应该可以添加请求了
-	if !bucket.Allow() {
-		t.Error("漏水后应该可以添加请求")
-	}
-	
-	// 检查状态，应该有2个请求（1个漏掉了，1个新加的）
-	current, _ := bucket.GetStatus()
-	if current != 2 {
-		t.Errorf("漏水后应该有2个请求，实际%d个", current)
-	}
-}
-
-// TestLeakyBucket_AllowN 测试批量添加请求
+// TestLeakyBucket_AllowN 测试批量请求
 func TestLeakyBucket_AllowN(t *testing.T) {
+	bucket := NewLeakyBucket(10, 50*time.Millisecond)
+	defer bucket.Stop()
+
+	start := time.Now()
+
+	// 请求 3 个，相当于 3 * 50ms = 150ms 的水量
+	// 第1次：立即成功，但水位增加 150ms
+	if !bucket.AllowN(3) {
+		t.Error("AllowN(3) 应该成功")
+	}
+
+	// 紧接着再请求 1 个
+	// 应该阻塞 150ms (等待前面的 3 个漏完)
+	if !bucket.AllowN(1) {
+		t.Error("AllowN(1) 应该成功")
+	}
+
+	elapsed := time.Since(start)
+	if elapsed < 140*time.Millisecond {
+		t.Errorf("AllowN 应该导致后续请求阻塞，实际耗时: %v", elapsed)
+	}
+}
+
+// TestLeakyBucket_GetStatus 测试状态获取
+func TestLeakyBucket_GetStatus(t *testing.T) {
 	bucket := NewLeakyBucket(5, 100*time.Millisecond)
 	defer bucket.Stop()
-	
-	// 尝试添加3个请求
-	if !bucket.AllowN(3) {
-		t.Error("应该可以添加3个请求")
-	}
-	
-	// 尝试添加3个请求（应该失败，只剩2个空间）
-	if bucket.AllowN(3) {
-		t.Error("不应该能添加3个请求")
-	}
-	
-	// 尝试添加2个请求
-	if !bucket.AllowN(2) {
-		t.Error("应该可以添加2个请求")
-	}
-	
-	// 现在桶应该满了
-	if bucket.AllowN(1) {
-		t.Error("桶应该满了")
-	}
-}
 
-// TestLeakyBucket_ZeroRequests 测试零请求添加
-func TestLeakyBucket_ZeroRequests(t *testing.T) {
-	bucket := NewLeakyBucket(3, 100*time.Millisecond)
-	defer bucket.Stop()
-	
-	// 添加0个请求应该总是成功
-	if !bucket.AllowN(0) {
-		t.Error("添加0个请求应该成功")
+	// 初始状态
+	cur, cap := bucket.GetStatus()
+	if cur != 0 || cap != 5 {
+		t.Errorf("初始状态错误: %d/%d", cur, cap)
 	}
-	
-	// 填满桶
-	bucket.AllowN(3)
-	
-	// 即使桶满了，添加0个请求也应该成功
-	if !bucket.AllowN(0) {
-		t.Error("添加0个请求应该总是成功")
-	}
-}
-
-// TestLeakyBucket_FastLeak 测试快速漏水
-func TestLeakyBucket_FastLeak(t *testing.T) {
-	bucket := NewLeakyBucket(10, 10*time.Millisecond) // 容量10，每10ms漏一个
-	defer bucket.Stop()
-	
-	// 填满桶
-	bucket.AllowN(10)
-	
-	// 等待一段时间
-	time.Sleep(150 * time.Millisecond)
-	
-	// 应该漏掉了很多请求
-	current, _ := bucket.GetStatus()
-	if current >= 10 {
-		t.Errorf("快速漏水后应该漏掉一些请求，当前还有%d个", current)
-	}
-}
-
-// TestLeakyBucket_Stop 测试停止功能
-func TestLeakyBucket_Stop(t *testing.T) {
-	bucket := NewLeakyBucket(3, 100*time.Millisecond)
-	
-	// 添加一些请求
+	// 添加一个请求
 	bucket.Allow()
-	bucket.Allow()
-	
-	// 停止桶
-	bucket.Stop()
-	
-	// 再次停止应该不会出错
-	bucket.Stop()
-	
-	// 停止后仍然可以添加请求（但不会漏水）
-	if !bucket.Allow() {
-		t.Error("停止后应该仍可以添加请求")
+	// 立即检查状态，应该有 1 个在排队
+	cur, _ = bucket.GetStatus()
+	if cur != 1 {
+		t.Errorf("添加1个请求后，状态应该是1，实际 %d", cur)
+	}
+
+	// 等待漏水
+	time.Sleep(110 * time.Millisecond)
+	cur, _ = bucket.GetStatus()
+	if cur != 0 {
+		t.Errorf("漏水后状态应该是0，实际 %d", cur)
 	}
 }
 
-// TestLeakyBucket_Concurrent 测试并发安全性
-func TestLeakyBucket_Concurrent(t *testing.T) {
-	bucket := NewLeakyBucket(50, 1*time.Millisecond) // 容量50，快速漏水
+// TestLeakyBucket_TrafficShaping 验证流量整形效果
+func TestLeakyBucket_TrafficShaping(t *testing.T) {
+	// 速率：每 50ms 一个
+	bucket := NewLeakyBucket(10, 50*time.Millisecond)
 	defer bucket.Stop()
-	
-	var wg sync.WaitGroup
-	var successCount int64
-	var mu sync.Mutex
-	
-	// 启动100个并发请求
-	for i := 0; i < 100; i++ {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
-			if bucket.Allow() {
-				mu.Lock()
-				successCount++
-				mu.Unlock()
-			}
-		}()
-	}
-	
-	wg.Wait()
-	
-	// 由于快速漏水，应该有一定数量的请求成功
-	if successCount == 0 {
-		t.Error("并发测试中应该有一些请求成功")
-	}
-	
-	if successCount > 50 {
-		t.Errorf("成功请求数不应该超过容量: %d", successCount)
-	}
-}
 
-// TestLeakyBucket_ConcurrentAllowN 测试并发AllowN
-func TestLeakyBucket_ConcurrentAllowN(t *testing.T) {
-	bucket := NewLeakyBucket(100, 10*time.Millisecond)
-	defer bucket.Stop()
-	
-	var wg sync.WaitGroup
-	var totalAdded int64
-	var mu sync.Mutex
-	
-	// 启动10个并发请求，每个尝试添加10个请求
-	for i := 0; i < 10; i++ {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
-			if bucket.AllowN(10) {
-				mu.Lock()
-				totalAdded += 10
-				mu.Unlock()
-			}
-		}()
-	}
-	
-	wg.Wait()
-	
-	// 总添加数不应该超过容量
-	if totalAdded > 100 {
-		t.Errorf("总添加数超过容量: %d", totalAdded)
-	}
-}
+	start := time.Now()
+	count := 5
 
-// TestLeakyBucket_EmptyBucketLeak 测试空桶漏水
-func TestLeakyBucket_EmptyBucketLeak(t *testing.T) {
-	bucket := NewLeakyBucket(3, 50*time.Millisecond)
-	defer bucket.Stop()
-	
-	// 不添加任何请求，等待一段时间
-	time.Sleep(200 * time.Millisecond)
-	
-	// 桶应该仍然是空的
-	current, _ := bucket.GetStatus()
-	if current != 0 {
-		t.Errorf("空桶漏水后应该仍然是空的，实际%d个", current)
+	// 连续发送 5 个请求
+	for i := 0; i < count; i++ {
+		bucket.Allow()
 	}
-	
-	// 应该可以添加请求
-	if !bucket.Allow() {
-		t.Error("空桶应该可以添加请求")
-	}
-}
 
-// TestLeakyBucket_LeakToEmpty 测试漏到空桶
-func TestLeakyBucket_LeakToEmpty(t *testing.T) {
-	bucket := NewLeakyBucket(2, 30*time.Millisecond)
-	defer bucket.Stop()
-	
-	// 添加2个请求
-	bucket.AllowN(2)
-	
-	// 等待足够时间让所有请求漏完
-	time.Sleep(100 * time.Millisecond)
-	
-	// 桶应该是空的
-	current, _ := bucket.GetStatus()
-	if current != 0 {
-		t.Errorf("所有请求漏完后桶应该是空的，实际%d个", current)
-	}
-	
-	// 应该可以添加满桶的请求
-	if !bucket.AllowN(2) {
-		t.Error("空桶应该可以添加满桶的请求")
+	elapsed := time.Since(start)
+	// 5 个请求，第一个立即，后 4 个各等待 50ms
+	// 总耗时约 4 * 50 = 200ms
+	expected := 200 * time.Millisecond
+
+	if elapsed < expected-20*time.Millisecond {
+		t.Errorf("流量整形过快: %v, 预期 >= %v", elapsed, expected)
 	}
 }
 
@@ -253,37 +147,9 @@ func TestLeakyBucket_LeakToEmpty(t *testing.T) {
 func BenchmarkLeakyBucket_Allow(b *testing.B) {
 	bucket := NewLeakyBucket(int64(b.N), time.Nanosecond) // 极快的漏水速率
 	defer bucket.Stop()
-	
-	b.ResetTimer()
-	b.RunParallel(func(pb *testing.PB) {
-		for pb.Next() {
-			bucket.Allow()
-		}
-	})
-}
 
-// BenchmarkLeakyBucket_AllowN 批量添加性能测试
-func BenchmarkLeakyBucket_AllowN(b *testing.B) {
-	bucket := NewLeakyBucket(int64(b.N*10), time.Nanosecond)
-	defer bucket.Stop()
-	
 	b.ResetTimer()
-	b.RunParallel(func(pb *testing.PB) {
-		for pb.Next() {
-			bucket.AllowN(10)
-		}
-	})
-}
-
-// BenchmarkLeakyBucket_GetStatus 状态获取性能测试
-func BenchmarkLeakyBucket_GetStatus(b *testing.B) {
-	bucket := NewLeakyBucket(1000, 100*time.Millisecond)
-	defer bucket.Stop()
-	
-	b.ResetTimer()
-	b.RunParallel(func(pb *testing.PB) {
-		for pb.Next() {
-			bucket.GetStatus()
-		}
-	})
+	for i := 0; i < b.N; i++ {
+		bucket.Allow()
+	}
 }
