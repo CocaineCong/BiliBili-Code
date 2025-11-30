@@ -28,7 +28,7 @@ func NewLeakyBucket(capacity int64, leakRate time.Duration) *LeakyBucket {
 }
 
 // Allow 尝试向桶中添加一个请求
-// 如果桶未满，该方法会阻塞直到请求被“漏”出（流量整形），然后返回 true
+// 如果桶未满，该方法会阻塞直到请求被漏出
 // 如果桶满了，立即返回 false
 func (lb *LeakyBucket) Allow() bool {
 	return lb.AllowN(1)
@@ -37,27 +37,23 @@ func (lb *LeakyBucket) Allow() bool {
 // AllowN 尝试向桶中添加 n 个请求
 func (lb *LeakyBucket) AllowN(n int64) bool {
 	lb.mutex.Lock()
+	defer lb.mutex.Unlock()
+
 	now := time.Now()
-	// 如果 lastTime 在过去，说明桶空了，重置水位为当前时间
 	if now.After(lb.lastTime) {
 		lb.lastTime = now
 	}
-	// 计算添加这些请求后的新水位（理论结束时间）
 	increment := lb.rate * time.Duration(n)
 	newLastTime := lb.lastTime.Add(increment)
 	// 检查是否超过容量
-	// 容量限制体现为：允许的最大排队等待时间
 	maxWait := lb.rate * time.Duration(lb.capacity)
 	if newLastTime.Sub(now) > maxWait {
-		lb.mutex.Unlock()
 		return false
 	}
 	// 计算当前请求需要等待的时间（排在前面的请求处理完的时间）
 	waitTime := lb.lastTime.Sub(now)
-	// 更新水位
 	lb.lastTime = newLastTime
-	lb.mutex.Unlock()
-	// 如果需要等待（流量整形），则阻塞
+	// 如果需要等待，则阻塞
 	if waitTime > 0 {
 		time.Sleep(waitTime)
 	}
@@ -66,7 +62,7 @@ func (lb *LeakyBucket) AllowN(n int64) bool {
 }
 
 // GetStatus 获取当前桶的状态
-// current: 当前桶中的排队请求数（估算）
+// current: 当前桶中的排队请求数
 // capacity: 桶的总容量
 func (lb *LeakyBucket) GetStatus() (current int64, capacity int64) {
 	lb.mutex.Lock()
@@ -76,7 +72,6 @@ func (lb *LeakyBucket) GetStatus() (current int64, capacity int64) {
 	if now.After(lb.lastTime) {
 		return 0, lb.capacity
 	}
-
 	// 计算剩余排队时间
 	remainingTime := lb.lastTime.Sub(now)
 	// 转换为请求数，向上取整

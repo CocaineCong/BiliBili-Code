@@ -26,7 +26,6 @@ func TestLeakyBucket_Basic(t *testing.T) {
 		t.Error("第3个请求应该成功")
 	}
 	elapsed := time.Since(start)
-	// 总耗时应该至少 200ms (第2个等待100ms，第3个等待100ms)
 	if elapsed < 180*time.Millisecond {
 		t.Errorf("流量整形未生效，3个请求总耗时过短: %v", elapsed)
 	}
@@ -37,11 +36,9 @@ func TestLeakyBucket_Overflow(t *testing.T) {
 	// 容量2，每100ms漏一个
 	bucket := NewLeakyBucket(2, 100*time.Millisecond)
 	defer bucket.Stop()
-
 	// 模拟并发突发流量
 	var wg sync.WaitGroup
 	results := make(chan bool, 5)
-
 	// 同时发起 5 个请求
 	for i := 0; i < 5; i++ {
 		wg.Add(1)
@@ -50,10 +47,8 @@ func TestLeakyBucket_Overflow(t *testing.T) {
 			results <- bucket.Allow()
 		}()
 	}
-
 	wg.Wait()
 	close(results)
-
 	successCount := 0
 	for res := range results {
 		if res {
@@ -61,8 +56,6 @@ func TestLeakyBucket_Overflow(t *testing.T) {
 		}
 	}
 
-	// 注意：由于并发调度的不确定性，可能有些请求稍微晚一点进入，导致 now 增加，从而可能通过更多。
-	// 但在极短时间内，应该接近 2 个。
 	if successCount < 2 || successCount > 3 {
 		t.Errorf("预期通过2-3个请求，实际通过 %d 个", successCount)
 	}
@@ -124,20 +117,16 @@ func TestLeakyBucket_TrafficShaping(t *testing.T) {
 	// 速率：每 50ms 一个
 	bucket := NewLeakyBucket(10, 50*time.Millisecond)
 	defer bucket.Stop()
-
 	start := time.Now()
 	count := 5
-
 	// 连续发送 5 个请求
 	for i := 0; i < count; i++ {
 		bucket.Allow()
 	}
-
 	elapsed := time.Since(start)
 	// 5 个请求，第一个立即，后 4 个各等待 50ms
 	// 总耗时约 4 * 50 = 200ms
 	expected := 200 * time.Millisecond
-
 	if elapsed < expected-20*time.Millisecond {
 		t.Errorf("流量整形过快: %v, 预期 >= %v", elapsed, expected)
 	}
